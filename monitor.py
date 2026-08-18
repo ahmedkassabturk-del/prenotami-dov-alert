@@ -107,20 +107,55 @@ def _visible_body_text(driver: webdriver.Chrome) -> str:
         return ""
 
 
-def _raise_if_blocked(driver: webdriver.Chrome) -> None:
+def _access_challenge_state(driver: webdriver.Chrome) -> str:
     host = _host(driver.current_url)
     text = normalize_text(_visible_body_text(driver)[:12000])
     title = normalize_text(driver.title)
-    markers = (
+    combined = f"{title} {text}"
+
+    interactive_or_hard_block_markers = (
         "verify you are human",
-        "checking your browser",
         "access denied",
-        "bot manager",
         "unusual traffic",
     )
-    if host == "validate.perfdrive.com" or any(marker in f"{title} {text}" for marker in markers):
+    if any(marker in combined for marker in interactive_or_hard_block_markers):
+        return "blocked"
+
+    automatic_validation_markers = (
+        "checking your browser",
+        "bot manager",
+        "browser validation",
+    )
+    if host == "validate.perfdrive.com" or any(
+        marker in combined for marker in automatic_validation_markers
+    ):
+        return "automatic"
+    return "clear"
+
+
+def _raise_if_blocked(driver: webdriver.Chrome) -> None:
+    state = _access_challenge_state(driver)
+
+    if state == "automatic":
+        # Radware may briefly show a JavaScript browser-validation page. Let the
+        # ordinary Chrome engine complete that first-party check. No CAPTCHA is
+        # solved and no stealth/fingerprint modification is attempted.
+        print("Prenot@mi is performing automatic browser validation; waiting safely.")
+        try:
+            WebDriverWait(driver, 35, poll_frequency=1).until(
+                lambda current_driver: _access_challenge_state(current_driver) != "automatic"
+            )
+        except TimeoutException:
+            raise MonitorError(
+                "Prenot@mi automatic browser validation did not complete. "
+                "The monitor will not bypass it."
+            ) from None
+        state = _access_challenge_state(driver)
+
+    if state == "blocked":
         raise MonitorError(
-            "Prenot@mi displayed an anti-bot/access challenge. The monitor will not bypass it."
+            "Prenot@mi displayed an interactive anti-bot/access challenge. "
+            "The monitor will not bypass it."
         )
 
 
